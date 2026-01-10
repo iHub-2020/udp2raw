@@ -37,14 +37,19 @@ jobs:
           # 清理旧的
           make clean
           
-          # 编译
+          # 编译 (强制使用静态链接，确保兼容 OpenWrt musl 环境)
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
-            make -j$(nproc)
+            # x86_64 静态编译
+            make -j$(nproc) LDFLAGS=-static
             mv udp2raw ${{ matrix.output_name }}
           elif [ "${{ matrix.arch }}" = "aarch64" ]; then
-            make CROSS=aarch64-linux-gnu- -j$(nproc)
+            # aarch64 交叉编译 + 静态链接
+            make CROSS=aarch64-linux-gnu- -j$(nproc) LDFLAGS=-static
             mv udp2raw ${{ matrix.output_name }}
           fi
+          
+          # 验证文件类型 (可选，用于调试日志)
+          file ${{ matrix.output_name }}
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -65,6 +70,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/**/*
+          # 注意：download-artifact v4 会为每个 artifact 创建子目录
+          # 这里的路径匹配需要覆盖所有子目录
+          files: |
+            artifacts/udp2raw_x86_64/udp2raw_x86_64
+            artifacts/udp2raw_aarch64/udp2raw_aarch64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
