@@ -1,11 +1,11 @@
 # ==============================================================================
 # GitHub Actions Workflow: Build and Release udp2raw
-# Author: Reyanmatic
+# Author: Reyanmatic (Modified for Auto-Versioning)
 # 说明:
 # 1. 同时编译 x86_64 和 aarch64 (R2S) 版本。
 # 2. 支持 Git Tag 触发自动发布正式版 (如 v1.0.0)。
-# 3. 支持 手动触发 (Workflow Dispatch) 发布测试版。
-# 4. 支持 代码提交 (Push to master) 自动触发编译发布。
+# 3. 支持 手动触发 (Workflow Dispatch) 和 代码提交 (Push) 自动触发。
+# 4. 【修改点】非 Tag 触发时，自动生成 v0.0.x 版本号 (基于运行次数)。
 # 5. 自动清理旧版本，只保留最新的 10 个 Release。
 # ==============================================================================
 
@@ -88,19 +88,19 @@ jobs:
       - name: Determine Tag Name
         id: tag
         run: |
-          # 逻辑判断：
-          # 1. 如果是 Tag 推送 (refs/tags/v1.0)，使用 Tag 名。
-          # 2. 如果是 手动触发 (workflow_dispatch)，使用 manual-build-ID。
-          # 3. 如果是 代码推送 (refs/heads/master)，使用 auto-build-ID。
+          # 逻辑判断 (已修改):
+          # 1. 如果是 Git Tag 推送 (refs/tags/v1.0)，优先使用你手动打的 Tag。
+          # 2. 如果是 代码推送 或 手动触发，自动生成 v0.0.{run_number} 格式。
           
           if [[ $GITHUB_REF == refs/tags/* ]]; then
+            # 情况 A: 你手动打了 Tag (正式版)
             echo "release_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
             echo "is_prerelease=false" >> $GITHUB_OUTPUT
-          elif [[ $GITHUB_EVENT_NAME == 'workflow_dispatch' ]]; then
-            echo "release_tag=manual-build-${{ github.run_number }}" >> $GITHUB_OUTPUT
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
           else
-            echo "release_tag=auto-build-${{ github.run_number }}" >> $GITHUB_OUTPUT
+            # 情况 B: 自动触发或手动触发 (自动生成版本号)
+            # github.run_number 是一个自动递增的数字
+            AUTO_VER="v0.0.${{ github.run_number }}"
+            echo "release_tag=$AUTO_VER" >> $GITHUB_OUTPUT
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
           fi
 
@@ -116,7 +116,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 新增步骤：清理旧的 Release，只保留最新的 10 个
+      # 清理旧的 Release，只保留最新的 10 个
+      # 这对于自动生成版本号非常重要，否则 Release 列表会无限膨胀
       - name: Delete Older Releases
         uses: dev-drprasad/delete-older-releases@v0.3.3
         with:
