@@ -2,8 +2,10 @@
 # GitHub Actions Workflow: Build and Release udp2raw
 # 说明:
 # 1. 同时编译 x86_64 和 aarch64 (R2S) 版本。
-# 2. 支持 Git Tag 触发自动发布正式版。
+# 2. 支持 Git Tag 触发自动发布正式版 (如 v1.0.0)。
 # 3. 支持 手动触发 (Workflow Dispatch) 发布测试版。
+# 4. 支持 代码提交 (Push to master) 自动触发编译发布。
+# 5. 自动清理旧版本，只保留最新的 10 个 Release。
 # ==============================================================================
 
 name: Build udp2raw Binaries
@@ -12,7 +14,13 @@ on:
   push:
     tags:
       - 'v*' # 当你推送类似 v1.0.0 的 tag 时触发
+    branches:
+      - master # 当检测到 master 分支有代码更新时触发
+      - main   # 兼容 main 分支
   workflow_dispatch: # 允许手动触发
+
+permissions:
+  contents: write # 赋予写权限，以便发布 Release 和删除旧版本
 
 jobs:
   build:
@@ -64,12 +72,12 @@ jobs:
         with:
           name: ${{ matrix.output_name }}
           path: ${{ matrix.output_name }}
+          # 设置临时构建产物只保留3天，避免占用过多空间
+          retention-days: 3
 
   release:
     needs: build
     runs-on: ubuntu-latest
-    # 修改点：不仅支持 Tag 触发，也支持手动触发 (workflow_dispatch)
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
@@ -79,25 +87,39 @@ jobs:
       - name: Determine Tag Name
         id: tag
         run: |
-          # 如果是 Tag 触发，使用 Tag 名；如果是手动触发，生成一个 manual-run-ID 的标签
+          # 逻辑判断：
+          # 1. 如果是 Tag 推送 (refs/tags/v1.0)，使用 Tag 名。
+          # 2. 如果是 手动触发 (workflow_dispatch)，使用 manual-build-ID。
+          # 3. 如果是 代码推送 (refs/heads/master)，使用 auto-build-ID。
+          
           if [[ $GITHUB_REF == refs/tags/* ]]; then
             echo "release_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
             echo "is_prerelease=false" >> $GITHUB_OUTPUT
-          else
+          elif [[ $GITHUB_EVENT_NAME == 'workflow_dispatch' ]]; then
             echo "release_tag=manual-build-${{ github.run_number }}" >> $GITHUB_OUTPUT
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "release_tag=auto-build-${{ github.run_number }}" >> $GITHUB_OUTPUT
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          # 使用上一步生成的标签名
           tag_name: ${{ steps.tag.outputs.release_tag }}
           name: Release ${{ steps.tag.outputs.release_tag }}
           prerelease: ${{ steps.tag.outputs.is_prerelease }}
-          # 注意：download-artifact v4 会为每个 artifact 创建子目录
           files: |
             artifacts/udp2raw_x86_64/udp2raw_x86_64
             artifacts/udp2raw_aarch64/udp2raw_aarch64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 新增步骤：清理旧的 Release，只保留最新的 10 个
+      - name: Delete Older Releases
+        uses: dev-drprasad/delete-older-releases@v0.3.3
+        with:
+          keep_latest: 10
+          delete_tags: true # 同时删除对应的 tag，保持干净
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
