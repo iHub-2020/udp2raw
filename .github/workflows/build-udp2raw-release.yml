@@ -7,7 +7,7 @@
 # 3. 每次运行都会覆盖 v0.0.0 中的二进制文件，实现 Makefile 免修改。
 # ==============================================================================
 
-name: Build udp2raw Binaries
+name: build-udp2raw-binaries
 
 on:
   push:
