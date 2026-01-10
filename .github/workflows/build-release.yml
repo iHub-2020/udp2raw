@@ -1,3 +1,11 @@
+# ==============================================================================
+# GitHub Actions Workflow: Build and Release udp2raw
+# 说明:
+# 1. 同时编译 x86_64 和 aarch64 (R2S) 版本。
+# 2. 支持 Git Tag 触发自动发布正式版。
+# 3. 支持 手动触发 (Workflow Dispatch) 发布测试版。
+# ==============================================================================
+
 name: Build udp2raw Binaries
 
 on:
@@ -34,7 +42,7 @@ jobs:
 
       - name: Compile
         run: |
-          # 清理旧的
+          # 清理旧的编译文件
           make clean
           
           # 编译 (强制使用静态链接，确保兼容 OpenWrt musl 环境)
@@ -48,7 +56,7 @@ jobs:
             mv udp2raw ${{ matrix.output_name }}
           fi
           
-          # 验证文件类型 (可选，用于调试日志)
+          # 验证文件类型 (打印到日志中以便检查)
           file ${{ matrix.output_name }}
 
       - name: Upload Artifact
@@ -60,18 +68,34 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # 修改点：不仅支持 Tag 触发，也支持手动触发 (workflow_dispatch)
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Determine Tag Name
+        id: tag
+        run: |
+          # 如果是 Tag 触发，使用 Tag 名；如果是手动触发，生成一个 manual-run-ID 的标签
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            echo "release_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          else
+            echo "release_tag=manual-build-${{ github.run_number }}" >> $GITHUB_OUTPUT
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          # 使用上一步生成的标签名
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          name: Release ${{ steps.tag.outputs.release_tag }}
+          prerelease: ${{ steps.tag.outputs.is_prerelease }}
           # 注意：download-artifact v4 会为每个 artifact 创建子目录
-          # 这里的路径匹配需要覆盖所有子目录
           files: |
             artifacts/udp2raw_x86_64/udp2raw_x86_64
             artifacts/udp2raw_aarch64/udp2raw_aarch64
