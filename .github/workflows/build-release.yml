@@ -3,9 +3,9 @@
 # Author: Reyanmatic (Modified for Auto-Versioning)
 # 说明:
 # 1. 同时编译 x86_64 和 aarch64 (R2S) 版本。
-# 2. 支持 Git Tag 触发自动发布正式版 (如 v1.0.0)。
-# 3. 支持 手动触发 (Workflow Dispatch) 和 代码提交 (Push) 自动触发。
-# 4. 【修改点】非 Tag 触发时，自动生成 v0.0.x 版本号 (基于运行次数)。
+# 2. 支持 Git Tag 触发 (如 v1.0.0)。
+# 3. 支持 手动触发 (Workflow Dispatch)，可输入自定义版本号。
+# 4. 自动兜底：如果不输入版本号，自动生成 v0.0.{run_number}。
 # 5. 自动清理旧版本，只保留最新的 10 个 Release。
 # ==============================================================================
 
@@ -16,9 +16,14 @@ on:
     tags:
       - 'v*' # 当你推送类似 v1.0.0 的 tag 时触发
     branches:
-      - master # 当检测到 master 分支有代码更新时触发
-      - main   # 兼容 main 分支
+      - master
+      - main
   workflow_dispatch: # 允许手动触发
+    inputs:
+      manual_version:
+        description: 'Manual Version (e.g., 1.0.0). Leave empty for auto-gen.'
+        required: false
+        default: ''
 
 permissions:
   contents: write # 赋予写权限，以便发布 Release 和删除旧版本
@@ -51,10 +56,8 @@ jobs:
 
       - name: Compile
         run: |
-          # 清理旧的编译文件
           make clean
           
-          # 编译 (强制使用静态链接，确保兼容 OpenWrt musl 环境)
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
             # x86_64 静态编译
             make -j$(nproc) LDFLAGS=-static
@@ -65,7 +68,6 @@ jobs:
             mv udp2raw ${{ matrix.output_name }}
           fi
           
-          # 验证文件类型 (打印到日志中以便检查)
           file ${{ matrix.output_name }}
 
       - name: Upload Artifact
@@ -73,8 +75,7 @@ jobs:
         with:
           name: ${{ matrix.output_name }}
           path: ${{ matrix.output_name }}
-          # 设置临时构建产物只保留3天，避免占用过多空间
-          retention-days: 3
+          retention-days: 1
 
   release:
     needs: build
@@ -88,17 +89,22 @@ jobs:
       - name: Determine Tag Name
         id: tag
         run: |
-          # 逻辑判断 (已修改):
-          # 1. 如果是 Git Tag 推送 (refs/tags/v1.0)，优先使用你手动打的 Tag。
-          # 2. 如果是 代码推送 或 手动触发，自动生成 v0.0.{run_number} 格式。
+          # 逻辑说明:
+          # 1. 如果是 Git Tag 推送，直接使用 Tag。
+          # 2. 如果是手动触发且输入了版本号，使用输入的版本 (自动补 v)。
+          # 3. 其他情况 (Push 或 手动未输入)，使用 v0.0.{run_number}。
           
           if [[ $GITHUB_REF == refs/tags/* ]]; then
-            # 情况 A: 你手动打了 Tag (正式版)
             echo "release_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
             echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.manual_version }}" != "" ]]; then
+            # 处理手动输入的版本号，确保有 v 前缀
+            INPUT_VER="${{ inputs.manual_version }}"
+            if [[ $INPUT_VER != v* ]]; then INPUT_VER="v$INPUT_VER"; fi
+            echo "release_tag=$INPUT_VER" >> $GITHUB_OUTPUT
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
           else
-            # 情况 B: 自动触发或手动触发 (自动生成版本号)
-            # github.run_number 是一个自动递增的数字
+            # 自动生成版本号
             AUTO_VER="v0.0.${{ github.run_number }}"
             echo "release_tag=$AUTO_VER" >> $GITHUB_OUTPUT
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
@@ -116,12 +122,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 清理旧的 Release，只保留最新的 10 个
-      # 这对于自动生成版本号非常重要，否则 Release 列表会无限膨胀
       - name: Delete Older Releases
         uses: dev-drprasad/delete-older-releases@v0.3.3
         with:
           keep_latest: 10
-          delete_tags: true # 同时删除对应的 tag，保持干净
+          delete_tags: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
