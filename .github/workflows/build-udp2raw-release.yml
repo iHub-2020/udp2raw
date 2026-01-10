@@ -50,7 +50,7 @@ jobs:
       - name: Compile
         run: |
           # 清理旧的编译文件
-          make clean
+          make clean || true
           
           # 编译 (强制使用静态链接，确保兼容 OpenWrt musl 环境)
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
@@ -65,13 +65,16 @@ jobs:
           
           # 验证文件类型 (打印到日志中以便检查)
           file ${{ matrix.output_name }}
+          
+          # 验证文件大小 (确保编译成功)
+          ls -lh ${{ matrix.output_name }}
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output_name }}
           path: ${{ matrix.output_name }}
-          retention-days: 1
+          retention-days: 7
 
   release:
     needs: build
@@ -82,24 +85,84 @@ jobs:
         with:
           path: artifacts
 
-      # 【修改点】强制设定固定版本号 v0.0.0
-      # 这样 Makefile 里的 PKG_VERSION:=0.0.0 永远不用改
+      - name: Prepare Release Files
+        run: |
+          echo "=== Downloaded artifacts ==="
+          find artifacts -type f -ls
+          
+          # 确保文件存在且有执行权限
+          chmod +x artifacts/udp2raw_x86_64/udp2raw_x86_64 || true
+          chmod +x artifacts/udp2raw_aarch64/udp2raw_aarch64 || true
+
+      # 【核心】固定版本号 v0.0.0
+      # Makefile 中 PKG_VERSION:=0.0.0 永远不用改
       - name: Set Fixed Tag
         id: tag
         run: |
           echo "release_tag=v0.0.0" >> $GITHUB_OUTPUT
           echo "is_prerelease=false" >> $GITHUB_OUTPUT
 
-      # 更新 Release v0.0.0 (覆盖旧文件)
-      # 注意：第一次运行前，GitHub 上可以没有 v0.0.0，它会自动创建。
-      # 之后每次运行，它都会把新的二进制文件上传到这个 Tag 下。
-      - name: Update Rolling Release
-        uses: softprops/action-gh-release@v1
+      # 删除旧的 Release（如果存在），确保可以重新创建
+      - name: Delete Existing Release
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const tag = 'v0.0.0';
+            
+            // 尝试获取现有 Release
+            try {
+              const { data: release } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: tag
+              });
+              
+              // 删除 Release
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id
+              });
+              console.log(`Deleted existing release: ${tag}`);
+              
+              // 删除 Tag
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`
+              });
+              console.log(`Deleted existing tag: ${tag}`);
+            } catch (e) {
+              console.log(`No existing release found for ${tag}, will create new one.`);
+            }
+
+      # 创建/更新 Release v0.0.0
+      - name: Create Rolling Release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.release_tag }}
-          name: Rolling Release (Always Latest)
-          body: "This is a rolling release. The binaries are always updated to the latest build.\n\nBuild Time: $(date)"
-          prerelease: ${{ steps.tag.outputs.is_prerelease }}
+          name: udp2raw Rolling Release (Always Latest)
+          body: |
+            ## udp2raw 滚动发布版本
+            
+            这是一个滚动发布版本，二进制文件始终保持最新。
+            
+            ### 下载链接
+            - `udp2raw_x86_64` - x86_64 架构 (静态编译)
+            - `udp2raw_aarch64` - aarch64 架构 (静态编译，适用于 R2S 等设备)
+            
+            ### 构建信息
+            - 构建时间: ${{ github.event.head_commit.timestamp }}
+            - 提交 SHA: ${{ github.sha }}
+            - 触发方式: ${{ github.event_name }}
+            
+            ### 在 OpenWrt Makefile 中使用
+            ```makefile
+            PKG_VERSION:=0.0.0
+            MANUAL_DOWNLOAD_URL:=https://github.com/iHub-2020/udp2raw/releases/download/v$(PKG_VERSION)
+            ```
+          prerelease: false
           files: |
             artifacts/udp2raw_x86_64/udp2raw_x86_64
             artifacts/udp2raw_aarch64/udp2raw_aarch64
