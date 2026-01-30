@@ -1,10 +1,11 @@
 # ==============================================================================
-# GitHub Actions Workflow: Build and Release udp2raw (Rolling Release)
-# Author: Reyanmatic (Modified for Fixed Versioning)
+# GitHub Actions Workflow: Build and Release udp2raw (Professional Versioning)
+# Author: Reyanmatic (Enhanced with Auto-Increment Versioning)
 # 说明:
 # 1. 同时编译 x86_64 和 aarch64 (R2S) 版本。
-# 2. 【核心修改】无论何种触发方式，统一发布到固定 Tag: v0.0.0
-# 3. 每次运行都会覆盖 v0.0.0 中的二进制文件，实现 Makefile 免修改。
+# 2. 【核心改进】专业版本管理：从 v1.0.0 开始自动递增版本号
+# 3. 支持手动指定版本号，默认自动递增 patch 版本 (+0.0.1)
+# 4. 保留所有历史版本，不再覆盖旧版本
 # ==============================================================================
 
 name: build-udp2raw-binaries
@@ -17,6 +18,20 @@ on:
       - master
       - main
   workflow_dispatch: # 允许手动触发
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.2.3, leave empty for auto-increment)'
+        required: false
+        type: string
+      version_bump:
+        description: 'Version bump type (when version is empty)'
+        required: false
+        type: choice
+        default: 'patch'
+        options:
+          - patch  # 默认: +0.0.1
+          - minor  # +0.1.0
+          - major  # +1.0.0
 
 permissions:
   contents: write # 赋予写权限，以便发布 Release
@@ -94,74 +109,88 @@ jobs:
           chmod +x artifacts/udp2raw_x86_64/udp2raw_x86_64 || true
           chmod +x artifacts/udp2raw_aarch64/udp2raw_aarch64 || true
 
-      # 【核心】固定版本号 v0.0.0
-      # Makefile 中 PKG_VERSION:=0.0.0 永远不用改
-      - name: Set Fixed Tag
-        id: tag
+      # 【核心改进】专业版本管理：自动递增版本号
+      - name: Determine Version
+        id: version
         run: |
-          echo "release_tag=v0.0.0" >> $GITHUB_OUTPUT
-          echo "is_prerelease=false" >> $GITHUB_OUTPUT
-
-      # 删除旧的 Release（如果存在），确保可以重新创建
-      - name: Delete Existing Release
-        uses: actions/github-script@v7
-        continue-on-error: true
-        with:
-          script: |
-            const tag = 'v0.0.0';
+          # 如果手动指定了版本号，直接使用
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "Using manual version: $VERSION"
+          else
+            # 获取最新的 release 版本
+            LATEST_TAG=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name // "v0.0.0"')
+            echo "Latest tag: $LATEST_TAG"
             
-            // 尝试获取现有 Release
-            try {
-              const { data: release } = await github.rest.repos.getReleaseByTag({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag: tag
-              });
+            # 如果没有任何 release，从 v1.0.0 开始
+            if [ "$LATEST_TAG" = "null" ] || [ "$LATEST_TAG" = "v0.0.0" ]; then
+              VERSION="1.0.0"
+              echo "No previous releases found, starting from v1.0.0"
+            else
+              # 解析版本号 (移除 v 前缀)
+              CURRENT_VERSION=${LATEST_TAG#v}
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
               
-              // 删除 Release
-              await github.rest.repos.deleteRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                release_id: release.id
-              });
-              console.log(`Deleted existing release: ${tag}`);
+              # 根据 bump 类型递增版本
+              BUMP_TYPE="${{ github.event.inputs.version_bump || 'patch' }}"
+              case $BUMP_TYPE in
+                major)
+                  MAJOR=$((MAJOR + 1))
+                  MINOR=0
+                  PATCH=0
+                  ;;
+                minor)
+                  MINOR=$((MINOR + 1))
+                  PATCH=0
+                  ;;
+                patch|*)
+                  PATCH=$((PATCH + 1))
+                  ;;
+              esac
               
-              // 删除 Tag
-              await github.rest.git.deleteRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `tags/${tag}`
-              });
-              console.log(`Deleted existing tag: ${tag}`);
-            } catch (e) {
-              console.log(`No existing release found for ${tag}, will create new one.`);
-            }
+              VERSION="$MAJOR.$MINOR.$PATCH"
+              echo "Auto-incremented version ($BUMP_TYPE): $VERSION"
+            fi
+          fi
+          
+          echo "release_tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "version_number=$VERSION" >> $GITHUB_OUTPUT
+          echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          
+          echo "Final version: v$VERSION"
 
-      # 创建/更新 Release v0.0.0
-      - name: Create Rolling Release
+      # 创建新版本 Release（不再覆盖旧版本）
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.release_tag }}
-          name: udp2raw Rolling Release (Always Latest)
+          tag_name: ${{ steps.version.outputs.release_tag }}
+          name: udp2raw v${{ steps.version.outputs.version_number }}
           body: |
-            ## udp2raw 滚动发布版本
+            ## udp2raw v${{ steps.version.outputs.version_number }}
             
-            这是一个滚动发布版本，二进制文件始终保持最新。
+            专业版本发布，支持版本历史追踪。
             
             ### 下载链接
             - `udp2raw_x86_64` - x86_64 架构 (静态编译)
             - `udp2raw_aarch64` - aarch64 架构 (静态编译，适用于 R2S 等设备)
             
             ### 构建信息
+            - 版本号: v${{ steps.version.outputs.version_number }}
             - 构建时间: ${{ github.event.head_commit.timestamp }}
             - 提交 SHA: ${{ github.sha }}
             - 触发方式: ${{ github.event_name }}
             
             ### 在 OpenWrt Makefile 中使用
             ```makefile
-            PKG_VERSION:=0.0.0
+            # 动态获取最新版本
+            PKG_VERSION:=$(shell curl -s https://api.github.com/repos/iHub-2020/udp2raw/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/^v//')
             MANUAL_DOWNLOAD_URL:=https://github.com/iHub-2020/udp2raw/releases/download/v$(PKG_VERSION)
             ```
+            
+            ### 版本历史
+            - 所有历史版本都会保留，不再覆盖
+            - 支持回滚到任意历史版本
+            - 版本号遵循语义化版本控制 (SemVer)
           prerelease: false
           files: |
             artifacts/udp2raw_x86_64/udp2raw_x86_64
